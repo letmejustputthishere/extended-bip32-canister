@@ -1,0 +1,10 @@
+type ecdsa_curve = variant { secp256k1; };
+type ecdsa_key_id = record { curve: ecdsa_curve; name: text };
+service : {
+  get_public_key_from_ic : (principal, vec blob, ecdsa_key_id) -> (
+    variant { Ok: record { public_key_hex: text; chain_code_hex: text }; Err: text },
+  );
+  compute_public_key_locally : (principal, vec blob, ecdsa_key_id) -> (
+    variant { Ok: record { public_key_hex: text; chain_code_hex: text }; Err: text },
+  );
+}
