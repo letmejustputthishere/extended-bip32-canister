@@ -1,40 +1,66 @@
 # Extended BIP32 derivation
 
-This canister shows how to derive extended-BIP32 ECDSA public keys in the same way as the `ecdsa_public_key` API of the Internet Computer. The canister exposes two interfaces to derive ECDSA public keys for a `canister_id` and using a `derivation_path`:
+This is a fork of [andreacerulli/extended-bip32-canister](https://github.com/andreacerulli/extended-bip32-canister) with a key difference in the implementation approach. While the original repository implements BIP32 derivation using the IC's master public keys, this fork implements derivation using canister-specific master public keys. This approach allows for verification of derived keys against the actual keys used by specific canisters on the Internet Computer.
+
+This canister is deployed on the Internet Computer mainnet with the canister ID `yobg6-hqaaa-aaaal-asdwq-cai`. You can interact with it directly on mainnet or deploy your own instance locally for development.
+
+This canister shows how to derive extended-BIP32 ECDSA public keys in the same way as the `ecdsa_public_key` API of the Internet Computer. The canister exposes two interfaces to derive ECDSA public keys:
 
 ```
   /// Forwards the request to the management canister of the IC and returns the derived key
-  /// and chain-code to the caller. 
-  get_public_key_from_ic : (principal, vec blob, ecdsa_key_id) -> (
+  /// and chain-code to the caller.
+  get_canister_key_from_ic : (principal, ecdsa_key_id, vec blob) -> (
     variant { Ok: record { public_key_hex: text; chain_code_hex: text }; Err: text },
   );
 
   /// Computes the derived public key and chain-code using the master ECDSA public key
   /// stored in the canister.
-  compute_public_key_locally : (principal, vec blob, ecdsa_key_id) -> (
+  compute_public_key_locally : (vec blob) -> (
     variant { Ok: record { public_key_hex: text; chain_code_hex: text }; Err: text },
   );
 
 ```
 
-The two interfaces above can be used to verify that the public keys computed by the canister are consistent with the ones computed by the IC. The local computation only supports the key ID available on mainnet, i.e. `key_1` and `test_key_1`. If any other key ID is used, the local computation would return an error. The public key retrieval from the IC supports any key ID available on the network where the canister is deployed, e.g. in a local development environment the key is `dfx_test_key`. Any other key ID is not supported and would result in an error. 
+The canister requires initialization with two arguments:
+- `canister_id`: The principal ID of the canister whose keys we want to derive
+- `ecdsa_key_id`: The ECDSA key configuration to use (e.g., `{name="key_1"; curve=variant {secp256k1}}`)
 
+Upon initialization, the canister immediately fetches the canister's master public key from the IC and stores it internally. This stored key is then used for all subsequent calls to `compute_public_key_locally`. The `get_canister_key_from_ic` method, however, allows specifying different canister IDs and key configurations for each call.
 
-## Master Public Keys on Mainnet:
-The internet computer has two master public keys available on mainnet, a production key and a test key: 
+## Obtaining Canister Master Keys
 
+To obtain a canister's master public key and chain code, you can use the `ecdsa_public_key` API with an empty derivation path. For example, to get the ckBTC minter's master key:
+
+```bash
+# Get the ckBTC minter's master public key and chain code
+dfx canister call --network ic aaaaa-aa ecdsa_public_key '(record {
+    canister_id = opt principal "mxzaz-hqaaa-aaaar-qaada-cai";
+    derivation_path = vec {};
+    key_id = record { name = "key_1"; curve = variant { secp256k1 } };
+})'
 ```
-/// Production key
-production_key_id = EcdsaKeyId{ curve: EcdsaCurve::Secp256k1, name: "key_1"}
-production_public_key = "02121bc3a5c38f38ca76487c72007ebbfd34bc6c4cb80a671655aa94585bbd0a02"
 
-/// Test Key
-test_key_id = EcdsaKeyId{ curve: EcdsaCurve::Secp256k1, name: "test_key_1"}
-test_public_key = "02f9ac345f6be6db51e1c5612cddb59e72c3d0d493c994d12035cf13257e3b1fa7"
+This will return both the master public key and chain code, which can be used to verify the correctness of key derivations.
+
+## Example: ckBTC Minter Canister
+
+For example, to work with the ckBTC minter canister on mainnet, you would initialize the canister with:
+
+```bash
+dfx deploy --argument '(principal "mxzaz-hqaaa-aaaar-qaada-cai", record {name="key_1"; curve=variant {secp256k1}})'
 ```
 
-The Note that the local computation of public keys would not succeed for a key_id that does not coincide with the above.
+This will fetch the ckBTC minter's master public key from mainnet. You can then use this key to derive further keys by providing different derivation paths. For instance, to derive the key for the first derivation index:
 
+```bash
+# Get the derived key from the IC
+dfx canister call --network ic <bip32_canister_id> get_canister_key_from_ic '(principal "mxzaz-hqaaa-aaaar-qaada-cai", record {name="key_1"; curve=variant {secp256k1}}, vec { blob "01" })'
+
+# Compute the same key locally using the stored master key
+dfx canister call --network ic <bip32_canister_id> compute_public_key_locally '(vec { blob "01" })'
+```
+
+Both calls should return the same key and chaincode, verifying that the local computation matches the IC's computation.
 
 ## Running the project locally
 
@@ -45,25 +71,23 @@ If you have dfx installed you can run the canister locally using the following c
 dfx start --background
 
 # Deploys your canisters to the replica and generates your candid interface
-dfx deploy
+dfx deploy --argument '(principal "<target_canister_id>", record {name="dfx_test_key"; curve=variant {secp256k1}})'
 ```
 
-**Warning:** the ECDSA key embedded in the local replica may not be stable, therefore the results returned by `get_public_key_from_ic` may not be consistent after restarting the replica.
-
+**Warning:** the ECDSA key embedded in the local replica may not be stable, therefore the results returned by `get_canister_key_from_ic` may not be consistent after restarting the replica.
 
 ## Calling the canister API
 
 The interfaces of the canister can be called using dfx as follows
 
 ```bash
-# Calls canister <bip32_canister_id> to compute the master public key of canister <other_canister_id> using an empty derivation path.
-dfx canister call --network ic <bip32_canister_id> compute_public_key_locally '(principal "<other_canister_id>", blob "", record {name="key_1"; curve=variant {secp256k1}})'
+# Calls canister <bip32_canister_id> to compute a derived public key using the specified derivation path
+dfx canister call --network ic <bip32_canister_id> compute_public_key_locally '(vec { blob "01" })'
 
-# Calls canister <bip32_canister_id> to fetch the master public key of canister <other_canister_id> from the ic using an empty derivation path.
-dfx canister call --network ic <bip32_canister_id> compute_public_key_locally '(principal "<other_canister_id>", blob "", record {name="key_1"; curve=variant {secp256k1}})'
+# Calls canister <bip32_canister_id> to fetch a derived public key from the IC using the specified derivation path
+dfx canister call --network ic <bip32_canister_id> get_canister_key_from_ic '(principal "<other_canister_id>", record {name="key_1"; curve=variant {secp256k1}}, vec { blob "01" })'
 ```
 
-When calling the canister running on the Internet Computer on Mainnet, the above calls should return the same key and chaincode for the same canister ID. By changing the empty `blob ""` it is possible to further derive keys for canisters.   
-
+When calling the canister running on the Internet Computer on Mainnet, the above calls should return the same key and chaincode for the same derivation path. The derivation path is specified as a vector of blobs, where each blob represents a derivation index.
 
 To call a canister deployed in the local development environment it is sufficient to remove `--network ic` from the above calls.

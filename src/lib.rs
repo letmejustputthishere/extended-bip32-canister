@@ -1,19 +1,14 @@
+use candid::{CandidType, Principal};
 use ic_cdk::{
-    api::management_canister::ecdsa::{EcdsaCurve,EcdsaKeyId,EcdsaPublicKeyArgument, EcdsaPublicKeyResponse},
-    export::{
-        candid::CandidType,
-        serde::Serialize,
-        Principal,
-    },
+    management_canister::{EcdsaKeyId, EcdsaPublicKeyArgs, EcdsaPublicKeyResult},
     update,
 };
-use std::str::FromStr;
+use serde::Serialize;
+use std::{cell::RefCell, str::FromStr, time::Duration};
 
-use ic_crypto_extended_bip32::{
-    DerivationIndex, DerivationPath,
-};
+use ic_crypto_extended_bip32::{DerivationIndex, DerivationPath};
 
-#[derive(CandidType, Serialize, Debug)]
+#[derive(CandidType, Serialize, Debug, Clone)]
 struct PublicKeyReplyString {
     pub public_key_hex: String,
     pub chain_code_hex: String,
@@ -21,22 +16,74 @@ struct PublicKeyReplyString {
 
 type CanisterId = Principal;
 
+thread_local! {
+    static STATE : RefCell<Option<State>> = RefCell::default();
+}
+
+struct State {
+    pub canister_id: CanisterId,
+    pub ecdsa_key_id: EcdsaKeyId,
+    pub canister_master_key: Option<PublicKeyReplyString>,
+}
+
+fn read_state<R>(f: impl FnOnce(&State) -> R) -> R {
+    STATE.with_borrow(|s| f(s.as_ref().expect("BUG: state is not initialized")))
+}
+
+fn mutate_state<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut State) -> R,
+{
+    STATE.with_borrow_mut(|s| f(s.as_mut().expect("BUG: state is not initialized")))
+}
+
+fn initialize_state(state: State) {
+    STATE.set(Some(state));
+}
+
+fn setup_timers() {
+    ic_cdk_timers::set_timer(Duration::ZERO, || {
+        ic_cdk::futures::spawn(async {
+            let canister_id = read_state(|s| s.canister_id);
+            let ecdsa_key_id = read_state(|s| s.ecdsa_key_id.clone());
+            let canister_master_key =
+                get_canister_key_from_ic(canister_id, ecdsa_key_id, Default::default())
+                    .await
+                    .unwrap();
+            mutate_state(|s| s.canister_master_key = Some(canister_master_key));
+        })
+    });
+}
+
+#[ic_cdk::init]
+fn init(canister_id: CanisterId, ecdsa_key_id: EcdsaKeyId) {
+    initialize_state(State {
+        canister_id,
+        ecdsa_key_id,
+        canister_master_key: None,
+    });
+    setup_timers();
+}
+
 #[update]
-async fn get_public_key_from_ic(
+async fn get_canister_key_from_ic(
     canister_id: CanisterId,
-    derivation_path: Vec<Vec<u8>>,
     ecdsa_key_id: EcdsaKeyId,
+    derivation_path: Vec<Vec<u8>>,
 ) -> Result<PublicKeyReplyString, String> {
-    let request = EcdsaPublicKeyArgument {
+    let args = EcdsaPublicKeyArgs {
         canister_id: Some(canister_id),
-        derivation_path,
         key_id: ecdsa_key_id,
+        derivation_path,
     };
 
-    let (res,): (EcdsaPublicKeyResponse,) =
-        ic_cdk::call(mgmt_canister_id(), "ecdsa_public_key", (request,))
+    let res: EcdsaPublicKeyResult =
+        ic_cdk::call::Call::unbounded_wait(mgmt_canister_id(), "ecdsa_public_key")
+            .with_arg(args)
             .await
-            .map_err(|e| format!("ecdsa_public_key failed {}", e.1))?;
+            .unwrap()
+            .candid()
+            .unwrap();
 
     Ok(PublicKeyReplyString {
         public_key_hex: hex::encode(&res.public_key),
@@ -46,21 +93,16 @@ async fn get_public_key_from_ic(
 
 #[update]
 fn compute_public_key_locally(
-    canister_id: CanisterId,
     derivation_path: Vec<Vec<u8>>,
-    ecdsa_key_id: EcdsaKeyId,
 ) -> Result<PublicKeyReplyString, String> {
-    match ecdsa_key_id.curve {
-        EcdsaCurve::Secp256k1 => (),
-        _ => return Err(format!("Curve not supported for key derivation"))
-    }
-    let master_key= match ecdsa_key_id.name.as_str(){
-        "test_key_1" => "02f9ac345f6be6db51e1c5612cddb59e72c3d0d493c994d12035cf13257e3b1fa7",
-        "key_1" => "02121bc3a5c38f38ca76487c72007ebbfd34bc6c4cb80a671655aa94585bbd0a02",
-        _ => return Err(format!("Master key not available for the given curve name"))
-    };
+    let canister_master_key = read_state(|s| s.canister_master_key.clone())
+        .expect("master key should be set during deployment");
 
-    let res = derive_public_key_from_master_key(canister_id, derivation_path,master_key)?;
+    let res = derive_public_key_from_master_key(
+        derivation_path,
+        &canister_master_key.public_key_hex,
+        &canister_master_key.chain_code_hex,
+    )?;
 
     Ok(PublicKeyReplyString {
         public_key_hex: hex::encode(&res.public_key),
@@ -69,12 +111,12 @@ fn compute_public_key_locally(
 }
 
 fn mgmt_canister_id() -> CanisterId {
-    CanisterId::from_str(&"aaaaa-aa").unwrap()
+    CanisterId::from_str("aaaaa-aa").unwrap()
 }
 
 // In the following, we register a custom getrandom implementation because
-// otherwise getrandom (which is a dependency of ic-crypto-extended-bip32) 
-// fails to compile. This is necessary because getrandom by default fails 
+// otherwise getrandom (which is a dependency of ic-crypto-extended-bip32)
+// fails to compile. This is necessary because getrandom by default fails
 // to compile for the wasm32-unknown-unknown target (which is required for
 // deploying a canister). This custom implementation always fails, which is
 // sufficient here because no randomness is involved in the key derivation.
@@ -84,18 +126,17 @@ pub fn always_fail(_buf: &mut [u8]) -> Result<(), getrandom::Error> {
 }
 
 fn derive_public_key_from_master_key(
-    canister_id: CanisterId,
     derivation_path: Vec<Vec<u8>>,
-    master_key: &str,
-) -> Result<EcdsaPublicKeyResponse, String> {
-
-    let master_key = hex::decode(master_key).expect("Master key could not be deserialized");
-    let master_chain_code = [0u8; 32];
-    
+    canister_master_key: &str,
+    canister_master_chain_code: &str,
+) -> Result<EcdsaPublicKeyResult, String> {
+    let master_key =
+        hex::decode(canister_master_key).expect("Master key could not be deserialized");
+    // let master_chain_code = [0u8; 32];
+    let master_chain_code = hex::decode(canister_master_chain_code)
+        .expect("Master Chain Code could not be deserialized");
 
     let mut path = vec![];
-    let derivation_index = DerivationIndex(canister_id.as_slice().to_vec());
-    path.push(derivation_index);
 
     for index in derivation_path {
         path.push(DerivationIndex(index));
@@ -103,13 +144,10 @@ fn derive_public_key_from_master_key(
     let derivation_path = DerivationPath::new(path);
 
     let res = derivation_path
-        .key_derivation(
-            &master_key,
-            &master_chain_code,
-        )
+        .key_derivation(&master_key, &master_chain_code)
         .map_err(|err| format!("Internal Error: {:?}", err))?;
 
-    Ok(EcdsaPublicKeyResponse {
+    Ok(EcdsaPublicKeyResult {
         public_key: res.derived_public_key,
         chain_code: res.derived_chain_code,
     })
@@ -117,16 +155,27 @@ fn derive_public_key_from_master_key(
 
 #[test]
 fn check_ckbtc_key() {
-    let ckbtc_minter_id = CanisterId::from_str("mqygn-kiaaa-aaaar-qaadq-cai").unwrap();
-    let ckbtc_public_key = "0222047a81d4f8a067031c89273d241b79a5a007c04dfaf36d07963db0b99097eb";
-    let ckbtc_chain_code = "821aebb643bd97d319d2fd0b2e483d4e7de2ea9039ff67568b693e6abc14a03b";
-    
-    let master_key_id = EcdsaKeyId{curve: EcdsaCurve::Secp256k1, name: "key_1".to_string()};
-    let derived_key = compute_public_key_locally(ckbtc_minter_id, vec![], master_key_id);
+    // as returned from calling `ecdsa_public_key` with key_1, no derivation path and the ckbtc minter canister principal
+    // the canister exposes `get_canister_key_from_ic` which is a proxy to the `ecdsa_public_key` call
+    let ckbtc_master_public_key =
+        "0222047a81d4f8a067031c89273d241b79a5a007c04dfaf36d07963db0b99097eb";
+    let ckbtc_master_chain_code =
+        "821aebb643bd97d319d2fd0b2e483d4e7de2ea9039ff67568b693e6abc14a03b";
+
+    // as returned from calling `ecdsa_public_key` with key_1, derivation path 01 in hex and the ckbtc minter canister principal
+    // the canister exposes `get_canister_key_from_ic` which is a proxy to the `ecdsa_public_key` call
+    let public_key = "02f45b92cccc52dc86cd3a2671e27bd14fa8b9d660e68ab216037f81d4d58d2a84";
+    let chain_code = "5430576376210b602392abd6306081e5966da1df134e558f3e3c52cc431c52e8";
+
+    let derived_key = derive_public_key_from_master_key(
+        vec![vec![1]],
+        ckbtc_master_public_key,
+        ckbtc_master_chain_code,
+    );
 
     assert!(derived_key.is_ok(), "{}", derived_key.unwrap_err());
-    let derived_key=derived_key.unwrap();
+    let derived_key = derived_key.unwrap();
 
-    assert_eq!(ckbtc_public_key, derived_key.public_key_hex);
-    assert_eq!(ckbtc_chain_code, derived_key.chain_code_hex);
+    assert_eq!(public_key, hex::encode(derived_key.public_key));
+    assert_eq!(chain_code, hex::encode(derived_key.chain_code));
 }

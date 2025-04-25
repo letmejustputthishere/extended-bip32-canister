@@ -1,17 +1,23 @@
 {
-  "version": 1,
-  "canisters": {
-    "extended_bip32_derivation": {
-      "type": "rust",
-      "package": "extended_bip32_derivation",
-      "candid": "src/extended_bip32_derivation.did"
-    }
-  },
-  "defaults": {
-    "build": {
-      "packtool": "",
-      "args": ""
-    }
-  },
-  "output_env_file": ".env"
+    "version": 1,
+    "canisters": {
+        "extended_bip32_derivation": {
+            "type": "custom",
+            "build": "cargo build --release --target wasm32-unknown-unknown --package extended_bip32_derivation",
+            "candid": "src/extended_bip32_derivation.did",
+            "wasm": "target/wasm32-unknown-unknown/release/extended_bip32_derivation.wasm",
+            "metadata": [
+                {
+                    "name": "candid:service"
+                }
+            ]
+        }
+    },
+    "defaults": {
+        "build": {
+            "packtool": "",
+            "args": ""
+        }
+    },
+    "output_env_file": ".env"
 }

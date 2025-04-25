@@ -7,10 +7,12 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-serde = "1"
-candid = "0.8.4"
-ic-cdk = "0.7.1"
+candid = "0.10"
+ic-cdk = "0.18"
 ic-crypto-extended-bip32 = { git = "https://github.com/dfinity/ic/", rev = "2762cd0c6a0ee6d7aa492fe277afebdb2a274344" }
 hex = "0.4.3"
 # Enable `custom` feature of k256's getrandom dependency. See lib.rs for more details.
 getrandom = { version = "0.2", features = ["custom"] }
+ic-cdk-timers = "0.12.0"
+serde = "1.0.197"
+serde_bytes = "0.11.14"
