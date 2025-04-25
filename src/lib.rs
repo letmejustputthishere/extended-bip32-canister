@@ -49,7 +49,7 @@ fn setup_timers() {
             let canister_master_key =
                 get_canister_key_from_ic(canister_id, ecdsa_key_id, Default::default())
                     .await
-                    .unwrap();
+                    .expect("should derive canister key from ic");
             mutate_state(|s| s.canister_master_key = Some(canister_master_key));
         })
     });
@@ -57,6 +57,16 @@ fn setup_timers() {
 
 #[ic_cdk::init]
 fn init(canister_id: CanisterId, ecdsa_key_id: EcdsaKeyId) {
+    initialize_state(State {
+        canister_id,
+        ecdsa_key_id,
+        canister_master_key: None,
+    });
+    setup_timers();
+}
+
+#[ic_cdk::post_upgrade]
+fn post_upgrade(canister_id: CanisterId, ecdsa_key_id: EcdsaKeyId) {
     initialize_state(State {
         canister_id,
         ecdsa_key_id,
