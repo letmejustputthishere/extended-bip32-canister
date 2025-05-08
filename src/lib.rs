@@ -4,7 +4,7 @@ use ic_cdk::{
     update,
 };
 use serde::Serialize;
-use std::{cell::RefCell, str::FromStr, time::Duration};
+use std::{cell::RefCell, time::Duration};
 
 use ic_crypto_extended_bip32::{DerivationIndex, DerivationPath};
 
@@ -87,13 +87,9 @@ async fn get_canister_key_from_ic(
         derivation_path,
     };
 
-    let res: EcdsaPublicKeyResult =
-        ic_cdk::call::Call::unbounded_wait(mgmt_canister_id(), "ecdsa_public_key")
-            .with_arg(args)
-            .await
-            .unwrap()
-            .candid()
-            .unwrap();
+    let res: EcdsaPublicKeyResult = ic_cdk::management_canister::ecdsa_public_key(&args)
+        .await
+        .map_err(|err| format!("Internal Error: {:?}", err))?;
 
     Ok(PublicKeyReplyString {
         public_key_hex: hex::encode(&res.public_key),
@@ -118,10 +114,6 @@ fn compute_public_key_locally(
         public_key_hex: hex::encode(&res.public_key),
         chain_code_hex: hex::encode(&res.chain_code),
     })
-}
-
-fn mgmt_canister_id() -> CanisterId {
-    CanisterId::from_str("aaaaa-aa").unwrap()
 }
 
 // In the following, we register a custom getrandom implementation because
