@@ -1,4 +1,4 @@
-> ![IMPORTANT]
+> [!IMPORTANT]
 > Realted library: https://github.com/dfinity/ic-pub-key
 
 # Extended BIP32 derivation
