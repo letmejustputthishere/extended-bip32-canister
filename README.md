@@ -1,3 +1,6 @@
+> ![IMPORTANT]
+> Realted library: https://github.com/dfinity/ic-pub-key
+
 # Extended BIP32 derivation
 
 This is a fork of [andreacerulli/extended-bip32-canister](https://github.com/andreacerulli/extended-bip32-canister) with a key difference in the implementation approach. While the original repository implements BIP32 derivation using the IC's master public keys, this fork implements derivation using canister-specific master public keys. This approach allows for verification of derived keys against the actual keys used by specific canisters on the Internet Computer.
